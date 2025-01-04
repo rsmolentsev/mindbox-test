@@ -1,4 +1,4 @@
-# HPA - хороший выбор, учитывая условие с дневным циклом по нагрузке
+# HPA - must-have, учитывая условие с дневным циклом по нагрузке
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -15,16 +15,17 @@ spec:
   # Максимальное количество подов по результатам нагрузочного теста
   maxReplicas: 4
   metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        # Используем масштабирование при превышении 70% загрузки CPU. Обосную это:
-        # 1. Значение по умолчанию (50) кажется слишком маленьким, в таком случае скейлинг может произойти
-        # даже при умеренной нагрузке
-        # 2. Запуск новых подов происходит реже, следовательно, меньше потребление ресурсов от deployment'а.
-        averageUtilization: 70
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Примечание: можно также завязать HPA, например, на RPS, подтянув метрики (например, если работаем с ALB от Яндекса)
+          # Используем масштабирование при превышении 70% загрузки CPU. Обосную это:
+          # 1. Значение по умолчанию (50%) кажется слишком маленьким, в таком случае скейлинг может произойти
+          # даже при умеренной нагрузке
+          # 2. Запуск новых подов происходит реже, следовательно, меньше потребление ресурсов от deployment'а.
+          averageUtilization: 70
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -42,53 +43,52 @@ spec:
       # Даём поду время для корректного завершения работы. Можно увеличить, но зависит от самого приложения.
       terminationGracePeriodSeconds: 30
       # Исходя из условия, что кластер мультизональный и в нём пять узлов, использую:
-      # 1. podAntiAffinity - чтобы поды распределялись по узлам равномерно, особенно если в одной зоне есть
-      # несколько узлов.
-      affinity: 
+      # 1. podAntiAffinity - чтобы поды распределялись по узлам равномерно в рамках одной зоны.
+      affinity:
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchLabels:
-                app: mindboxapp
-            topologyKey: kubernetes.io/hostname
-      
-      # 2. topologySpreadConstraints - чтобы поды распределялись равномерно по трём зонам
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: mindboxapp
+                topologyKey: kubernetes.io/hostname
+      # 2. topologySpreadConstraints - чтобы поды распределялись равномерно по трём зонам.
       topologySpreadConstraints:
-      # Максимальное отклонение числа подов между зонами -- используем равномерное распределение
-      - maxSkew: 1
-        topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: DoNotSchedule
-        labelSelector:
-          matchLabels:
-            app: mindboxapp
+        # Максимальное отклонение числа подов между зонами -- используем равномерное распределение
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: mindboxapp
       containers:
-      - name: mindboxapp
-        image: rsmolentsev/mindboxapp:v1
-        resources:
-          # Требования к ресурсам для стандартного потребления
-          requests:
-            memory: "128Mi"
-            cpu: "0.1"
-          # Требования к лимитам ресурсов, учитывая условие с CPU для инициализации
-          limits:
-            memory: "128Mi"
-            cpu: "0.5"
-        ports:
-        - containerPort: 8000
-        # Проверка готовности пода для обработки трафика
-        readinessProbe:
-          httpGet:
-            path: /health 
-            port: 8000
-          initialDelaySeconds: 10 # 10 секунд для инициализации приложения
-          periodSeconds: 5
-        # Проверка жизнеспособности приложения
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 15
-          periodSeconds: 10
+        - name: mindboxapp
+          image: rsmolentsev/mindboxapp:v1
+          resources:
+            # Требования к ресурсам для стандартного потребления
+            requests:
+              memory: "128Mi"
+              cpu: "0.1"
+            # Требования к лимитам ресурсов, учитывая условие с CPU для инициализации
+            limits:
+              memory: "128Mi"
+              cpu: "0.5"
+          ports:
+            - containerPort: 8000
+          # Проверка готовности пода для обработки трафика
+          readinessProbe:
+            httpGet:
+              path: /health 
+              port: 8000
+            initialDelaySeconds: 10 # 10 секунд для инициализации приложения
+            periodSeconds: 5
+          # Проверка жизнеспособности приложения
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
   strategy:
     type: RollingUpdate # Обновление без downtime
     rollingUpdate:
@@ -105,9 +105,9 @@ spec:
   selector:
     app: mindboxapp
   ports:
-  - protocol: TCP
-    port: 8000
-    targetPort: 8000
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
   type: ClusterIP
 ---
 # Используем PodDisruptionBudget для защиты от простоя.
